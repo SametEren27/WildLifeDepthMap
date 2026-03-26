@@ -6,13 +6,23 @@ import numpy as np
 import math
 from modules.inference_engine import InferenceEngine
 from modules.species_classifier import SpeciesClassifier
+import customtkinter as ctk
+import math
+import sys
 
-DETECTOR_PATH = r'C:\WildLifeDepthMap\models\md_v5b.0.0.pt' 
+import os
+import sys
+
+
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+DETECTOR_PATH = get_resource_path(os.path.join('models', 'md_v5b.0.0.pt'))
 IMAGE_FOLDER = 'specifictest/' 
 DEVICE = 'cpu' 
 
-K_SLOPE = 60 
-OFF_SET = -0.5  
 H_METERS = 0.5   
 V_FOV = 42.0    
 
@@ -27,16 +37,16 @@ def get_depth_at_click(event, x, y, flags, param):
 
 
 def calibrate_camera(distances, depths):
-    """
-    Call this if you want to find your custom K_SLOPE and OFF_SET.
-    distances: e.g. [3, 5, 10] | depths: e.g. [17.0, 24.3, 11.0]
-    """
+
     if len(distances) < 2: return 100.0, 0.0
     inv_depths = [1.0 / d for d in depths]
     m, c = np.polyfit(inv_depths, distances, 1)
     print(f"New Calibration: Slope(K)={m:.2f}, Offset(C)={c:.2f}")
     return m, c
 
+my_distances = [3.0, 5.0, 7.0]
+my_depths = [42.1, 27.2, 17.0]
+K_SLOPE, OFF_SET = calibrate_camera(my_distances, my_depths)
 
 def main():
     engine = InferenceEngine(DETECTOR_PATH, DEVICE)
@@ -77,7 +87,7 @@ def main():
                 robust_depth = 1.0
 
             dist_ai = (K_SLOPE / robust_depth) + OFF_SET
-            
+
             img_h = frame.shape[0]
             rel_y = (ymax - (img_h / 2)) / (img_h / 2)
             angle_rad = math.radians(rel_y * (V_FOV / 2))
@@ -110,5 +120,12 @@ def main():
 
     cv2.destroyAllWindows()
 
+
 if __name__ == "__main__":
+    app = WildlifeMetricPrototype()
+    app.mainloop()
     main()
+
+
+
+
