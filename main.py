@@ -6,200 +6,199 @@ import numpy as np
 import math
 import customtkinter as ctk
 from tkinter import filedialog, messagebox
+from PIL import Image, ImageTk
+import sys
+
 from modules.inference_engine import InferenceEngine
 from modules.species_classifier import SpeciesClassifier
 
-# --- AYARLAR ---
-DETECTOR_PATH = os.path.join('models', 'md_v5b.0.0.pt')
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+def get_resource_path(relative_path):
+    if hasattr(sys, '_MEIPASS'):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
+
+DEVICE = 'cpu'
+DETECTOR_PATH = get_resource_path(os.path.join('models', 'md_v5b.0.0.pt'))
 
 class WildlifeMetricPrototype(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Wildlife Metric Lab v2.0 - Stabil Sürüm")
-        self.geometry("950x900")
+        self.title("Wildlife Metric Lab v2.9 - Flexible Window")
+        self.geometry("950x980")
         
-        # Engine'leri Güvenli Yükle
-        try:
-            self.engine = InferenceEngine(DETECTOR_PATH, DEVICE)
-            self.classifier = SpeciesClassifier()
-        except Exception as e:
-            messagebox.showerror("Hata", f"Modeller yüklenemedi: {e}")
-
+        self.engine = None
         self.last_depth_map = None
         self.ref_path = None
         self.animal_path = None
+        self.calib_win = None
 
-        # --- PANEL TASARIMI ---
+        try:
+            if os.path.exists(DETECTOR_PATH):
+                self.engine = InferenceEngine(DETECTOR_PATH, DEVICE)
+                print(">>> MOTOR HAZIR.")
+        except Exception as e:
+            print(f">>> MOTOR HATASI: {e}")
+
         self.setup_ui()
 
     def setup_ui(self):
-        # 1. Dosya Seçimi
+        # 1. DOSYA SEÇİMİ
         f_frame = ctk.CTkFrame(self)
         f_frame.pack(pady=10, padx=20, fill="x")
-        self.btn_ref = ctk.CTkButton(f_frame, text="1. REF FOTO (Çubuklu)", command=self.select_ref)
-        self.btn_ref.pack(side="left", padx=10, pady=10, expand=True)
-        self.btn_animal = ctk.CTkButton(f_frame, text="2. HAYVAN FOTO", command=self.select_animal)
-        self.btn_animal.pack(side="left", padx=10, pady=10, expand=True)
+        ctk.CTkButton(f_frame, text="1. REFERANS SEÇ", command=self.select_ref).pack(side="left", padx=10, pady=10, expand=True)
+        ctk.CTkButton(f_frame, text="2. ANALİZ SEÇ", command=self.select_animal).pack(side="left", padx=10, pady=10, expand=True)
 
-        # 2. Anlık Tıklama Bilgisi (CRITICAL: Anında güncellenir)
+        # 2. DEĞER PANELI
         self.info_frame = ctk.CTkFrame(self, fg_color="#1a1a1a")
         self.info_frame.pack(pady=5, padx=20, fill="x")
-        self.click_label = ctk.CTkLabel(self.info_frame, text="SON TIKLANAN DEĞER: ---", 
-                                        font=("Arial", 16, "bold"), text_color="#FFCC00")
+        self.click_label = ctk.CTkLabel(self.info_frame, text="GÜNCEL AI DEĞERİ: ---", font=("Arial", 18, "bold"), text_color="#FFCC00")
         self.click_label.pack(pady=10)
 
-        # 3. Referans Girişleri (Grid yapısı ile daha düzenli)
+        # 3. MESAFE GİRİŞLERİ
         self.ref_frame = ctk.CTkFrame(self)
-        self.ref_frame.pack(pady=10, padx=20, fill="both", expand=True)
-        
+        self.ref_frame.pack(pady=10, padx=20, fill="both")
         self.meters = [1, 3, 5, 7, 9, 11, 13, 15]
         self.entries = {}
-        
-        # 2 sütunlu giriş alanı
         for i, m in enumerate(self.meters):
             r, c = divmod(i, 2)
-            row = ctk.CTkFrame(self.ref_frame)
-            row.grid(row=r, column=c, padx=10, pady=5, sticky="ew")
-            ctk.CTkLabel(row, text=f"{m}m AI:", width=60).pack(side="left")
-            ent = ctk.CTkEntry(row, width=120)
-            ent.pack(side="right", padx=5)
+            row = ctk.CTkFrame(self.ref_frame); row.grid(row=r, column=c, padx=10, pady=5, sticky="ew")
+            ctk.CTkLabel(row, text=f"{m}m Değeri:", width=80).pack(side="left")
+            ent = ctk.CTkEntry(row, width=120); ent.pack(side="right", padx=5)
             self.entries[m] = ent
 
-        # 4. Yatay Girişler (3m Sol/Sağ)
-        h_frame = ctk.CTkFrame(self)
+        # 4. YATAY TELAFİ
+        h_frame = ctk.CTkFrame(self, fg_color="#2b2b2b")
         h_frame.pack(pady=10, padx=20, fill="x")
-        ctk.CTkLabel(h_row := ctk.CTkFrame(h_frame), text="3m Sol X:").pack(side="left", padx=5)
-        self.ent_x_l = ctk.CTkEntry(h_row, width=80); self.ent_x_l.pack(side="left", padx=5)
-        ctk.CTkLabel(h_row, text="3m Sağ X:").pack(side="left", padx=5)
-        self.ent_x_r = ctk.CTkEntry(h_row, width=80); self.ent_x_r.pack(side="left", padx=5)
+        ctk.CTkLabel(h_frame, text="YATAY TELAFİ (3m Çubukları)", font=("Arial", 12, "bold")).pack(pady=2)
+        h_row = ctk.CTkFrame(h_frame, fg_color="transparent")
         h_row.pack(pady=5)
+        ctk.CTkLabel(h_row, text="Sol X:").pack(side="left", padx=5)
+        self.ent_x_l = ctk.CTkEntry(h_row, width=80); self.ent_x_l.pack(side="left", padx=5)
+        ctk.CTkLabel(h_row, text="Sağ X:").pack(side="left", padx=5)
+        self.ent_x_r = ctk.CTkEntry(h_row, width=80); self.ent_x_r.pack(side="left", padx=5)
 
-        # 5. Kontrol Butonları
-        self.calib_btn = ctk.CTkButton(self, text="KALİBRASYON PENCERESİNİ AÇ", command=self.open_calibration, state="disabled")
+        # 5. FORMÜL SEÇİMİ
+        self.formula_option = ctk.CTkComboBox(self, values=["Linear Interpolation", "2. Degree Polynomial"])
+        self.formula_option.pack(pady=10); self.formula_option.set("Linear Interpolation")
+
+        # 6. BUTONLAR
+        self.calib_btn = ctk.CTkButton(self, text="KALİBRASYON EKRANINI AÇ", command=self.open_calibration, state="disabled")
         self.calib_btn.pack(pady=5)
-        
-        self.formula_option = ctk.CTkComboBox(self, values=["Linear Interpolation", "2. Degree Polynomial", "Pinhole Model"])
-        self.formula_option.pack(pady=10); self.formula_option.set("2. Degree Polynomial")
+        self.run_btn = ctk.CTkButton(self, text="ANALİZİ BAŞLAT", command=self.start_analysis, fg_color="green", height=45, state="disabled")
+        self.run_btn.pack(pady=20)
 
-        self.run_btn = ctk.CTkButton(self, text="ANALİZİ BAŞLAT", command=self.start_analysis, fg_color="green", state="disabled")
-        self.run_btn.pack(pady=10)
-
-    # --- DOSYA VE GÖRÜNTÜ ---
     def select_ref(self):
-        path = filedialog.askopenfilename()
-        if path: 
-            self.ref_path = path
-            self.calib_btn.configure(state="normal", fg_color="blue")
+        self.ref_path = filedialog.askopenfilename()
+        if self.ref_path: self.calib_btn.configure(state="normal", fg_color="blue")
 
     def select_animal(self):
-        path = filedialog.askopenfilename()
-        if path: 
-            self.animal_path = path
-            self.run_btn.configure(state="normal")
+        self.animal_path = filedialog.askopenfilename()
+        if self.animal_path: self.run_btn.configure(state="normal")
 
     def open_calibration(self):
-        try:
-            frame = cv2.imread(self.ref_path)
-            depth_map, _ = self.engine.run_inference(frame)
-            self.last_depth_map = depth_map
-            
-            # Görüntü oluştur
-            depth_norm = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
-            depth_jet = cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
-            
-            # Ekranı bölme (Orijinal + Derinlik)
-            h, w = frame.shape[:2]
-            combined = np.hstack((cv2.resize(frame, (640, 480)), cv2.resize(depth_jet, (640, 480))))
-            
-            win_name = "KALIBRASYON (Tikla -> Deger Panele Gider) | Cikis: ESC"
-            cv2.namedWindow(win_name)
-            cv2.setMouseCallback(win_name, self.on_click, {"h": h, "w": w})
-            
-            while True:
-                cv2.imshow(win_name, combined)
-                key = cv2.waitKey(1) & 0xFF
-                if key == 27 or cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
-                    break
-            cv2.destroyWindow(win_name)
-        except Exception as e:
-            messagebox.showerror("Crash Önleyici", f"Görüntü işlenirken hata: {e}")
+        if self.calib_win is not None and self.calib_win.winfo_exists():
+            self.calib_win.focus(); return
+        
+        frame = cv2.imread(self.ref_path)
+        depth_map, _ = self.engine.run_inference(frame)
+        self.last_depth_map = depth_map
+        self.orig_h, self.orig_w = frame.shape[:2]
 
-    def on_click(self, event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN:
-            # Combined resimden asıl koordinata geçiş
-            orig_w, orig_h = param["w"], param["h"]
-            # Tıklanan nokta soldaki resim mi sağdaki mi? (640 sınırı)
-            clicked_x = x if x < 640 else x - 640
-            
-            real_x = int(clicked_x * (orig_w / 640))
-            real_y = int(y * (orig_h / 480))
-            
-            # Sınır kontrolü (Crash engelleme)
-            real_x = max(0, min(real_x, orig_w - 1))
-            real_y = max(0, min(real_y, orig_h - 1))
-            
-            val = self.last_depth_map[real_y, real_x]
-            
-            # PANELİ ANINDA GÜNCELLE
-            self.click_label.configure(text=f"DERİNLİK: {val:.4f} | X PİKSEL: {real_x}")
-            self.update_idletasks() # GUI'yi anında zorla güncelle
+        depth_norm = cv2.normalize(depth_map, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
+        depth_jet = cv2.applyColorMap(depth_norm, cv2.COLORMAP_JET)
+        
+        # Orijinal resim ve derinlik haritasını yan yana birleştir
+        combined = np.hstack((frame, depth_jet)) # Bu sefer resize etmeden ham birleştiriyoruz
+        
+        img_rgb = cv2.cvtColor(combined, cv2.COLOR_BGR2RGB)
+        img_pil = Image.fromarray(img_rgb)
+        
+        self.calib_win = ctk.CTkToplevel(self)
+        self.calib_win.title("Kalibrasyon Ekranı")
+        self.calib_win.geometry("1300x600")
 
-    # --- ANALİZ MANTIĞI ---
+        # ÖNEMLİ: CTkImage kullanarak resmi pencereye göre ölçeklenebilir yapıyoruz
+        self.ctk_img = ctk.CTkImage(light_image=img_pil, dark_image=img_pil, size=(1280, 500))
+        
+        self.img_label = ctk.CTkLabel(self.calib_win, image=self.ctk_img, text="")
+        self.img_label.pack(fill="both", expand=True, pady=10, padx=10)
+        
+        # Tıklama olayını bağla
+        self.img_label.bind("<Button-1>", self.on_tkinter_click)
+
+    def on_tkinter_click(self, event):
+        # Pencerenin O ANKİ gerçek boyutlarını al (Dinamik Ölçekleme)
+        curr_width = self.img_label.winfo_width()
+        curr_height = self.img_label.winfo_height()
+        
+        # Pencere iki resimden oluştuğu için tek resim genişliği yarısıdır
+        one_img_width = curr_width / 2
+        
+        # Tıklanan x koordinatını sağ mı sol mu kontrol et
+        x = event.x
+        clicked_x = x if x < one_img_width else x - one_img_width
+        
+        # --- DİNAMİK EŞLEME FORMÜLÜ ---
+        # (Tıklanan Piksel / O anki Genişlik) * Orijinal Resim Genişliği
+        real_x = int((clicked_x / one_img_width) * self.orig_w)
+        real_y = int((event.y / curr_height) * self.orig_h)
+        
+        # Sınır Güvenliği
+        real_x = max(0, min(real_x, self.orig_w - 1))
+        real_y = max(0, min(real_y, self.orig_h - 1))
+        
+        val = self.last_depth_map[real_y, real_x]
+        self.click_label.configure(text=f"AI DEĞERİ: {val:.6f} | X: {real_x}")
+
     def start_analysis(self):
         try:
-            x_ref = []
-            y_ref = []
+            x_ref, y_ref = [], []
             for m, ent in self.entries.items():
                 if ent.get():
                     x_ref.append(float(ent.get()))
-                    y_ref.append(m)
-
+                    y_ref.append(float(m))
+            
             if len(x_ref) < 2:
-                messagebox.showwarning("Eksik Veri", "En az 2 referans girmelisiniz!")
+                messagebox.showwarning("Hata", "Referansları girin!")
                 return
 
             frame = cv2.imread(self.animal_path)
             depth_map, detections = self.engine.run_inference(frame)
+            img_w = frame.shape[1]
 
             for det in detections:
                 xmin, ymin, xmax, ymax, _, _ = det
-                # Alt kısımdan örnekleme (Henrich 2023 Mantığı)
                 roi = depth_map[int(ymax*0.85):int(ymax), int(xmin):int(xmax)]
-                robust_d = np.percentile(roi, 95) if roi.size > 0 else 1.0
-                
-                # Mesafe hesapla
-                dist = self.calculate_math(robust_d, (xmin+xmax)/2, frame.shape[1], np.array(x_ref), np.array(y_ref))
-                
-                cv2.rectangle(frame, (int(xmin), int(ymin)), (int(xmax), int(ymax)), (0, 255, 0), 2)
-                cv2.putText(frame, f"{dist:.2f}m", (int(xmin), int(ymin)-10), 0, 0.8, (0, 255, 0), 2)
+                d_raw = np.percentile(roi, 95) if roi.size > 0 else 0.1
 
-            cv2.imshow("SONUC", frame)
+                model = self.formula_option.get()
+                if model == "Linear Interpolation" or len(x_ref) < 3:
+                    m_slope, c_off = np.polyfit(x_ref, 1.0/np.array(y_ref), 1)
+                    z = 1.0 / (m_slope * d_raw + c_off)
+                else:
+                    coeffs = np.polyfit(x_ref, y_ref, 2)
+                    z = coeffs[0]*(d_raw**2) + coeffs[1]*d_raw + coeffs[2]
+
+                if z <= 0 or z > 80:
+                    z = y_ref[(np.abs(np.array(x_ref) - d_raw)).argmin()]
+
+                dist = z
+                try:
+                    xl, xr = float(self.ent_x_l.get()), float(self.ent_x_r.get())
+                    focal = (abs(xr - xl) * 3.0) / 2.0
+                    x_center = (xmin + xmax) / 2
+                    x_meter = ((x_center - img_w/2) * z) / focal
+                    dist = math.sqrt(z**2 + x_meter**2)
+                except: pass
+
+                cv2.rectangle(frame, (int(xmin), int(ymin)), (int(xmax), int(ymax)), (0, 255, 0), 3)
+                cv2.putText(frame, f"{dist:.2f}m", (int(xmin), int(ymin)-15), 0, 1.2, (0, 255, 0), 3)
+
+            cv2.imshow("ANALIZ SONUCU", frame)
             cv2.waitKey(0)
-            cv2.destroyWindow("SONUC")
+            cv2.destroyAllWindows()
         except Exception as e:
-            messagebox.showerror("Hata", f"Analiz sırasında bir sorun oluştu: {e}")
-
-    def calculate_math(self, d_raw, x_p, img_w, xr, yr):
-        model = self.formula_option.get()
-        # 1. Dikey (Z)
-        if model == "Linear Interpolation":
-            m, c = np.polyfit(xr, 1.0/yr, 1)
-            z = 1.0 / (m * d_raw + c)
-        elif model == "2. Degree Polynomial":
-            a, b, c = np.polyfit(xr, yr, 2)
-            z = a*(d_raw**2) + b*d_raw + c
-        else: # Pinhole basitleştirilmiş
-            z = (3.0 * xr[np.where(yr==3)[0][0]]) / d_raw if 3 in yr else yr[0]
-
-        # 2. Yatay (X) Düzeltme
-        try:
-            xl, xr_pix = float(self.ent_x_l.get()), float(self.ent_x_r.get())
-            focal = (abs(xr_pix - xl) * 3.0) / 2.0
-            x_m = ((x_p - img_w/2) * z) / focal
-            return math.sqrt(z**2 + x_m**2)
-        except:
-            return z
+            messagebox.showerror("Hata", str(e))
 
 if __name__ == "__main__":
     app = WildlifeMetricPrototype()
