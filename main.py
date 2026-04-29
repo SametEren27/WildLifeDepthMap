@@ -32,11 +32,11 @@ try:
 except Exception as e:
     DEVICE = 'cpu'
 
-DETECTOR_PATH = get_resource_path(os.path.join('models', 'md_v5b.0.0.pt'))
+DETECTOR_PATH = get_resource_path(os.path.join('weights', 'md_v5b.0.0.pt'))
 
 class WildlifeMetricPrototype(ctk.CTk):
     def __init__(self):
-        super().__init__()
+        super().__init__() 
         self.title("DÜ-Orman Fak. Fotokapan Proje Prototipi ")
         self.geometry("500x600")
         ctk.set_appearance_mode("light")
@@ -52,11 +52,15 @@ class WildlifeMetricPrototype(ctk.CTk):
             if os.path.exists(DETECTOR_PATH):
                 self.engine = InferenceEngine(DETECTOR_PATH, DEVICE)
                 print(">>> MOTOR HAZIR.")
+            else:
+                print(f">>> HATA: Model dosyası bulunamadı: {DETECTOR_PATH}")
+
         except Exception as e:
-            print(f">>> MOTOR HATASI: {e}")
+            import traceback
+            print(">>> KRİTİK BAŞLATMA HATASI DETAYI:")
+            traceback.print_exc()        
 
         self.setup_ui()
-
 
     def copy_to_clipboard(self, event=None):
         full_text = self.click_label.cget("text")
@@ -81,6 +85,14 @@ class WildlifeMetricPrototype(ctk.CTk):
 
         self.status_label = ctk.CTkLabel(self, text="Henüz Seçim Yapılmadı", font=("Arial", 14))
         self.status_label.pack(pady=10)
+
+  
+        self.roi_mode = ctk.CTkSegmentedButton(self, 
+            values=["AUTO", "NEAR", "MID", "FAR"],
+            command=self.update_roi_logic)
+        self.roi_mode.set("AUTO")
+        self.roi_mode.pack(pady=10, padx=20, fill="x")
+
 
         self.info_frame = ctk.CTkFrame(self, fg_color="#97dd36")
         self.info_frame.pack(pady=5, padx=20, fill="x")
@@ -133,7 +145,17 @@ class WildlifeMetricPrototype(ctk.CTk):
         self.animal_path = filedialog.askopenfilename()
         if self.animal_path: self.run_btn.configure(state="normal")
 
+
+    def update_roi_logic(self, value):
+        print(f">>> Manuel ROI Modu Seçildi: {value}")
+
+
     def open_calibration(self):
+
+        if self.engine is None:
+            messagebox.showerror("Hata", "Görüntü işleme motoru yüklenemedi! \nTerminaldeki hata mesajına bakın.")
+            return
+            
         if self.calib_win is not None and self.calib_win.winfo_exists():
             self.calib_win.focus(); return 
 
@@ -195,7 +217,25 @@ class WildlifeMetricPrototype(ctk.CTk):
         d_raw = float(self.last_depth_map[real_y, real_x])
         
         self.click_label.configure(text=f"DERİNLİK HAM DEĞERİ: {d_raw:.4f} | X: {real_x}")
+
+    def show_result_window(self, frame):
+        res_win = ctk.CTkToplevel(self)
+        res_win.title("Analiz Sonucu")
         
+        h, w = frame.shape[:2]
+        # En-boy oranını koruyarak yeni boyut hesapla
+        max_w, max_h = 900, 700
+        ratio = min(max_w/w, max_h/h)
+        new_w, new_h = int(w * ratio), int(h * ratio)
+        
+        img_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img_pil = PIL.Image.fromarray(img_rgb)
+        img_ctk = ctk.CTkImage(light_image=img_pil, size=(new_w, new_h))
+        
+        res_label = ctk.CTkLabel(res_win, image=img_ctk, text="")
+        res_label.pack(pady=10, padx=10)
+        ctk.CTkButton(res_win, text="Kapat", command=res_win.destroy).pack(pady=5)
+            
     def start_analysis(self):
         try:
             x_ref, y_ref = [], []
@@ -205,126 +245,81 @@ class WildlifeMetricPrototype(ctk.CTk):
                     y_ref.append(float(m))
             
             if len(x_ref) < 2:
-                messagebox.showwarning("Hata", "Referansları girin!")
+                messagebox.showwarning("Hata", "Lütfen en az 2 referans noktası girin!")
                 return
 
             stream = open(self.animal_path, "rb")
-            bytes = bytearray(stream.read())
-            numpyarray = np.asarray(bytes, dtype=np.uint8)
-            frame = cv2.imdecode(numpyarray, cv2.IMREAD_COLOR)
-
-            if frame is None:
-                messagebox.showerror("Hata", "Resim dosyası okunamadı! Lütfen dosya isminde garip karakterler olmadığından emin olun.")
-                return
+            frame = cv2.imdecode(np.frombuffer(stream.read(), np.uint8), cv2.IMREAD_COLOR)
             info_bar_h = int(frame.shape[0] / 18)
             analysis_frame = frame[0:frame.shape[0]-info_bar_h, :].copy()
-            
             h_orig, w_orig = analysis_frame.shape[:2]
 
             depth_map, detections = self.engine.run_inference(analysis_frame)
             
-            if len(detections) == 0:
-                messagebox.showinfo("Bilgi", "Görselde hayvan algılanamadı.")
+            if not detections:
+                messagebox.showinfo("Bilgi", "Görselde hayvan tespit edilemedi.")
                 return
 
             for det in detections:
                 xmin, ymin, xmax, ymax, conf, cls = det
                 ixmin, iymin, ixmax, iymax = int(xmin), int(ymin), int(xmax), int(ymax)
+                box_h = iymax - iymin
+                cx, cy = int((ixmin + ixmax)/2), int((iymin + iymax)/2)
+                
+                rough_roi = depth_map[max(0,cy-5):min(h_orig,cy+5), max(0,cx-5):min(w_orig,cx+5)]
+                rough_val = np.median(rough_roi) if rough_roi.size > 0 else 0.5
+                
+                mode = self.roi_mode.get()
+                if mode == "AUTO":
+                    if rough_val > 0.6:   current_case = "NEAR"
+                    elif rough_val > 0.35: current_case = "MID"
+                    else:                 current_case = "FAR"
+                    self.roi_mode.set(current_case) 
+                else:
+                    current_case = mode
 
-                roi = depth_map[int(iymax*0.85):iymax, ixmin:ixmax]
-                d_raw = np.percentile(roi, 95) if roi.size > 0 else 0.1
+                if current_case == "NEAR":
+                    roi = depth_map[int(iymax-box_h*0.15):iymax, ixmin:ixmax]
+                    d_final = np.percentile(roi, 90) if roi.size > 0 else rough_val
+                    box_color = (0, 255, 0) 
+                
+                elif current_case == "MID":
+                    roi = depth_map[int(iymin+box_h*0.5):int(iymin+box_h*0.8), ixmin:ixmax]
+                    d_final = np.mean(roi) if roi.size > 0 else rough_val
+                    box_color = (255, 165, 0)
+                
+                else: 
+                    roi = depth_map[int(iymin+box_h*0.4):int(iymin+box_h*0.6), ixmin:ixmax]
+                    d_final = np.mean(roi) if roi.size > 0 else rough_val
+                    box_color = (0, 0, 255)
 
-                model = self.formula_option.get()
-                if model == "Linear Interpolation" or len(x_ref) < 3:
+                img_cx, img_cy = w_orig / 2, h_orig / 2
+                max_r = math.sqrt(img_cx**2 + img_cy**2)
+                current_r = math.sqrt((cx - img_cx)**2 + (cy - img_cy)**2)
+                factor = 1 + (0.15 * ((current_r / max_r)**2))
+
+                d_final_corrected = d_final * factor
+
+                formula = self.formula_option.get()
+                if "Linear" in formula:
                     m_slope, c_off = np.polyfit(x_ref, 1.0/np.array(y_ref), 1)
-                    z = 1.0 / (m_slope * d_raw + c_off)
+                    dist = 1.0 / (m_slope * d_final_corrected + c_off)
                 else:
                     coeffs = np.polyfit(x_ref, y_ref, 2)
-                    z = coeffs[0]*(d_raw**2) + coeffs[1]*d_raw + coeffs[2]
+                    dist = coeffs[0]*(d_final_corrected**2) + coeffs[1]*d_final_corrected + coeffs[2]
 
-                H_CAM = 0.5    
-                V_FOV = 42.0   
-                
-                rel_y = (iymax - (h_orig / 2)) / (h_orig / 2)
-                angle_rad = math.radians(rel_y * (V_FOV / 2))
-                
-                if angle_rad > 0:
-                    dist_geo = H_CAM / math.tan(angle_rad)
-                    dist = (z * 0.9) + (dist_geo * 0.1)
-                else:
-                    dist = z
-
-                try:
-                    xl, xr = float(self.ent_x_l.get()), float(self.ent_x_r.get())
-                    focal = (abs(xr - xl) * 3.0) / 2.0
-                    x_center = (ixmin + ixmax) / 2
-                    x_meter = ((x_center - w_orig/2) * dist) / focal
-                    dist = math.sqrt(dist**2 + x_meter**2)
-                except: pass
-
-                cv2.rectangle(analysis_frame, (ixmin, iymin), (ixmax, iymax), (0, 255, 0), 3)
-                label = f"{dist:.2f}m"
+                label = f"{dist:.2f}m [{current_case}]"
+                cv2.rectangle(analysis_frame, (ixmin, iymin), (ixmax, iymax), box_color, 3)
                 cv2.putText(analysis_frame, label, (ixmin, iymin - 10), 
-                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, box_color, 2)
 
-            img_rgb = cv2.cvtColor(analysis_frame, cv2.COLOR_BGR2RGB)
-            img_pil = Image.fromarray(img_rgb)
-            
-            self.result_win = ctk.CTkToplevel(self)
-            self.result_win.title("Analiz Sonucu")
-            self.result_win.attributes("-topmost", True)
-            
-            disp_w = 1200
-            disp_h = int((h_orig / w_orig) * disp_w)
-            self.result_win.geometry(f"{disp_w}x{disp_h}")
+            self.show_result_window(analysis_frame)
 
-            result_img = ctk.CTkImage(light_image=img_pil, size=(disp_w, disp_h))
-            result_label = ctk.CTkLabel(self.result_win, image=result_img, text="")
-            result_label.pack(fill="both", expand=True)
-            result_label._image = result_img 
-            
         except Exception as e:
-            messagebox.showerror("Hata", f"Analiz sırasında hata: {str(e)}")
+            messagebox.showerror("Hata", f"Analiz başarısız: {str(e)}")
 
 if __name__ == "__main__":
     app = WildlifeMetricPrototype()
     app.mainloop()
-
-
-# H_METERS = 0.5   
-# V_FOV = 42.0    
-
-#     images = [f for f in os.listdir(IMAGE_FOLDER) if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
-
-
-#             img_h = frame.shape[0]
-#             rel_y = (ymax - (img_h / 2)) / (img_h / 2)
-#             angle_rad = math.radians(rel_y * (V_FOV / 2))
-#             dist_geo = H_METERS / math.tan(angle_rad) if angle_rad > 0 else dist_ai
-            
-#             final_dist = (dist_ai * 0.8) + (dist_geo * 0.2)
-
-#             base_w = 2000
-#             dyn_scale = frame.shape[1] / base_w
-#             dyn_thick = max(2, int(3 * dyn_scale))
-
-#             cv2.rectangle(frame, (int(xmin), int(ymin)), (int(xmax), int(ymax)), (0, 255, 0), 2)
-#             cv2.rectangle(frame, (int(xmin), int(ymax - roi_h)), (int(xmax), int(ymax)), (0, 0, 255), 2)
-
-#             label_str = f"{species_name} {species_conf*100:.0f}% | {final_dist:.1f}m (Raw:{robust_depth:.1f})"
-#             (tw, th), _ = cv2.getTextSize(label_str, cv2.FONT_HERSHEY_SIMPLEX, dyn_scale, dyn_thick)
-            
-#             cv2.rectangle(frame, (int(xmin), int(ymin) - th - 20), (int(xmin) + tw, int(ymin)), (0, 0, 0), -1)
-#             cv2.putText(frame, label_str, (int(xmin), int(ymin) - 10), 
-#                         cv2.FONT_HERSHEY_SIMPLEX, dyn_scale, (0, 255, 0), dyn_thick)
-
-#         win_name = 'WildLife Detection & Depth'
-#         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL) 
-#         cv2.setMouseCallback(win_name, get_depth_at_click, depth_map)
-        
-
-
-
-
 
 
