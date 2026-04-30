@@ -223,7 +223,6 @@ class WildlifeMetricPrototype(ctk.CTk):
         res_win.title("Analiz Sonucu")
         
         h, w = frame.shape[:2]
-        # En-boy oranını koruyarak yeni boyut hesapla
         max_w, max_h = 900, 700
         ratio = min(max_w/w, max_h/h)
         new_w, new_h = int(w * ratio), int(h * ratio)
@@ -268,12 +267,18 @@ class WildlifeMetricPrototype(ctk.CTk):
                 
                 rough_roi = depth_map[max(0,cy-5):min(h_orig,cy+5), max(0,cx-5):min(w_orig,cx+5)]
                 rough_val = np.median(rough_roi) if rough_roi.size > 0 else 0.5
-                
+
+                sorted_indices = np.argsort(x_ref)
+                x_sorted = np.array(x_ref)[sorted_indices]
+                y_sorted = np.array(y_ref)[sorted_indices]
+
+                rough_dist = np.interp(rough_val, x_sorted, y_sorted)
+
                 mode = self.roi_mode.get()
                 if mode == "AUTO":
-                    if rough_val > 0.6:   current_case = "NEAR"
-                    elif rough_val > 0.35: current_case = "MID"
-                    else:                 current_case = "FAR"
+                    if rough_dist < 5.0:      current_case = "NEAR"
+                    elif rough_dist < 15.0:   current_case = "MID"
+                    else:                     current_case = "FAR"
                     self.roi_mode.set(current_case) 
                 else:
                     current_case = mode
@@ -282,28 +287,26 @@ class WildlifeMetricPrototype(ctk.CTk):
                     roi = depth_map[int(iymax-box_h*0.15):iymax, ixmin:ixmax]
                     d_final = np.percentile(roi, 90) if roi.size > 0 else rough_val
                     box_color = (0, 255, 0) 
-                
                 elif current_case == "MID":
                     roi = depth_map[int(iymin+box_h*0.5):int(iymin+box_h*0.8), ixmin:ixmax]
                     d_final = np.mean(roi) if roi.size > 0 else rough_val
                     box_color = (255, 165, 0)
-                
                 else: 
                     roi = depth_map[int(iymin+box_h*0.4):int(iymin+box_h*0.6), ixmin:ixmax]
                     d_final = np.mean(roi) if roi.size > 0 else rough_val
                     box_color = (0, 0, 255)
-
-                img_cx, img_cy = w_orig / 2, h_orig / 2
-                max_r = math.sqrt(img_cx**2 + img_cy**2)
-                current_r = math.sqrt((cx - img_cx)**2 + (cy - img_cy)**2)
-                factor = 1 + (0.15 * ((current_r / max_r)**2))
-
+                # factor = 1 + (0.15 * ((current_r / max_r)**2))
+                factor = 1.0 
                 d_final_corrected = d_final * factor
+                dist = np.interp(d_final_corrected, x_sorted, y_sorted)
 
                 formula = self.formula_option.get()
                 if "Linear" in formula:
-                    m_slope, c_off = np.polyfit(x_ref, 1.0/np.array(y_ref), 1)
-                    dist = 1.0 / (m_slope * d_final_corrected + c_off)
+                    sorted_indices = np.argsort(x_ref)
+                    x_sorted = np.array(x_ref)[sorted_indices]
+                    y_sorted = np.array(y_ref)[sorted_indices]
+                        
+                    dist = np.interp(d_final_corrected, x_sorted, y_sorted)
                 else:
                     coeffs = np.polyfit(x_ref, y_ref, 2)
                     dist = coeffs[0]*(d_final_corrected**2) + coeffs[1]*d_final_corrected + coeffs[2]
@@ -322,4 +325,4 @@ if __name__ == "__main__":
     app = WildlifeMetricPrototype()
     app.mainloop()
 
-
+## knk range kısmının 2 asamalı calısması gerektigidnen emin ol ic ice calısıcaklar once default olcak sonra near mid far yapıcak ve formulleri tekrar duzenle 
