@@ -17,6 +17,7 @@ import torchvision
 import ultralytics 
 import timm
 import PIL
+import threading
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -34,33 +35,218 @@ except Exception as e:
 
 DETECTOR_PATH = get_resource_path(os.path.join('weights', 'md_v5b.0.0.pt'))
 
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("green")
+
 class WildlifeMetricPrototype(ctk.CTk):
     def __init__(self):
-        super().__init__() 
-        self.title("DÜ-Orman Fak. Fotokapan Proje Prototipi ")
-        self.geometry("500x600")
-        ctk.set_appearance_mode("light")
-        
-        self.configure(fg_color="#E0DB86")
-        self.engine = None
-        self.last_depth_map = None
-        self.ref_path = None
-        self.animal_path = None
+        super().__init__()
+
+
+        self.meters = [1, 3, 5, 7, 9, 11, 13, 15]
+        self.entries = {}  # Analize giden veriler burada tutuluyor
         self.calib_win = None
+        self.last_depth_map = None
+        
+        # ... (Grid konfigürasyonun) ...
+        self.setup_ui_content()
+        self.refresh_ui_text()
+        
+        # --- 1. RENK VE TEMA AYARLARI ---
+        self.colors = {
+            "bg_main": "#FFFDD0",      # Canlı Vanilya Kremi
+            "bg_sidebar": "#F0EAD6",   # Yumuşak Mat Krem
+            "primary": "#27AE60",      # Parlak Zümrüt Yeşili
+            "primary_hover": "#2ECC71", # Canlı Açık Yeşil
+            "accent": "#1E272E",       # Derin Antrasit
+            "white": "#FFFFFF",
+            "border": "#D1D1B0"
+        }
+        
+        # --- 2. DİL SÖZLÜĞÜ ---
+        self.lang = "TR"
+        self.TEXTS = {
+            "TR": {
+                "title": "DÜ-Orman Fak. Yaban Hayatı Analizi",
+                "sidebar_head": "KONTROL PANELİ",
+                "btn_ref": "1. Referans Seç",
+                "btn_calib": "2. Kalibrasyonu Başlat",
+                "btn_animal": "3. Analiz Görseli Seç",
+                "settings": "Analiz Ayarları",
+                "batch": "Yığın İşleme (Batch)",
+                "conf": "Güven Haritası",
+                "start": "ANALİZİ BAŞLAT",
+                "ai_val": "GÜNCEL AI DEĞERİ",
+                "dist_table": "Mesafe Kalibrasyon Tablosu"
+            },
+            "EN": {
+                "title": "DU-Forestry Wildlife Analysis",
+                "sidebar_head": "CONTROL PANEL",
+                "btn_ref": "1. Select Reference",
+                "btn_calib": "2. Start Calibration",
+                "btn_animal": "3. Select Target Image",
+                "settings": "Analysis Settings",
+                "batch": "Batch Processing",
+                "conf": "Confidence Map",
+                "start": "RUN ANALYSIS",
+                "ai_val": "CURRENT AI VALUE",
+                "dist_table": "Distance Calibration Table"
+            }
+        }
 
-        try:
-            if os.path.exists(DETECTOR_PATH):
+        # --- 3. ANA PENCERE YAPILANDIRMASI ---
+        self.title(self.TEXTS[self.lang]["title"])
+        self.geometry("1150x850")
+        ctk.set_appearance_mode("light")
+
+        # Değişkenler
+        self.engine = None
+        self.meters = [1, 3, 5, 7, 9, 11, 13, 15]
+        self.entries = {}
+        self.is_batch = ctk.BooleanVar(value=False)
+        self.show_conf = ctk.BooleanVar(value=False)
+        self.calib_win = None  # Hatanın çözümü burası
+
+
+        # Grid Ayarları
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(0, weight=1)
+
+        # --- 4. ANA ÇERÇEVELER (Layout) ---
+        self.sidebar = ctk.CTkFrame(self, width=280, fg_color=self.colors["bg_sidebar"], corner_radius=0)
+        self.sidebar.grid(row=0, column=0, sticky="nsew")
+
+        self.main_view = ctk.CTkFrame(self, fg_color=self.colors["bg_main"], corner_radius=0)
+        self.main_view.grid(row=0, column=1, sticky="nsew", padx=20, pady=20)
+
+        # Arayüzü İnşa Et
+        self.setup_widgets()
+        self.setup_status_bar()
+        self.refresh_ui_text() # Metinleri bas
+        
+        self.meters = [1, 3, 5, 7, 9, 11, 13, 15]
+        self.entries = {}
+        self.is_batch = ctk.BooleanVar(value=False)
+        self.show_conf = ctk.BooleanVar(value=False)
+        
+        # AI Motorunu Başlat
+        self.init_engine()
+
+    def setup_widgets(self):
+        """Tüm görsel elemanları sidebar ve main_view içine yerleştirir."""
+        
+        # --- SIDEBAR İÇERİĞİ ---
+        self.lbl_sidebar_head = ctk.CTkLabel(self.sidebar, text="", font=("Inter", 22, "bold"), text_color=self.colors["accent"])
+        self.lbl_sidebar_head.pack(pady=(30, 20))
+
+        # Modern Butonlar (Padding ve Radius yüksek)
+        self.btn_ref = self.create_styled_btn(self.sidebar, "btn_ref", self.select_ref)
+        self.calib_btn = self.create_styled_btn(self.sidebar, "btn_calib", self.open_calibration, state="disabled")
+        self.btn_animal = self.create_styled_btn(self.sidebar, "btn_animal", self.select_animal)
+
+        # Ayarlar ve Gelecek Özellikler
+        self.lbl_settings = ctk.CTkLabel(self.sidebar, text="", font=("Inter", 14, "bold"), text_color=self.colors["accent"])
+        self.lbl_settings.pack(pady=(40, 10))
+        
+        self.check_batch = ctk.CTkCheckBox(self.sidebar, text="", variable=self.is_batch, text_color=self.colors["accent"], border_color=self.colors["primary"])
+        self.check_batch.pack(pady=10, padx=30, anchor="w")
+        
+        self.check_conf = ctk.CTkCheckBox(self.sidebar, text="", variable=self.show_conf, text_color=self.colors["accent"], border_color=self.colors["primary"])
+        self.check_conf.pack(pady=10, padx=30, anchor="w")
+
+        # Dil Seçimi (Sidebar Altında)
+        self.lang_toggle = ctk.CTkSegmentedButton(self.sidebar, values=["TR", "EN"], command=self.change_language, selected_color=self.colors["primary"])
+        self.lang_toggle.pack(side="bottom", pady=20, padx=20, fill="x")
+        self.lang_toggle.set(self.lang)
+
+        # Ana Başlat Butonu
+        self.run_btn = ctk.CTkButton(self.sidebar, text="", command=self.start_analysis_thread,
+                                     fg_color=self.colors["primary"], hover_color=self.colors["primary_hover"],
+                                     height=55, corner_radius=18, font=("Inter", 16, "bold"), state="disabled")
+        self.run_btn.pack(side="bottom", pady=(10, 20), padx=20, fill="x")
+
+        # --- MAIN VIEW İÇERİĞİ ---
+        # Üst Bilgi Kartı
+        self.info_card = ctk.CTkFrame(self.main_view, fg_color=self.colors["white"], corner_radius=25, border_width=1, border_color=self.colors["border"])
+        self.info_card.pack(fill="x", pady=(0, 30), padx=10)
+        
+        self.lbl_ai_val = ctk.CTkLabel(self.info_card, text="", font=("Inter", 20, "bold"), text_color=self.colors["primary"])
+        self.lbl_ai_val.pack(pady=20)
+        self.lbl_ai_val.bind("<Button-1>", self.copy_to_clipboard) # Tıklayınca kopyala
+        self.lbl_ai_val.configure(cursor="hand2")
+
+        # Kompakt Kalibrasyon Tablosu (2 Sütun)
+        self.lbl_dist_table = ctk.CTkLabel(self.main_view, text="", font=("Inter", 16, "bold"), text_color=self.colors["accent"])
+        self.lbl_dist_table.pack(anchor="w", padx=20, pady=(10, 5))
+
+        self.grid_container = ctk.CTkFrame(self.main_view, fg_color="transparent")
+        self.grid_container.pack(fill="x", padx=10)
+
+        for i, m in enumerate(self.meters):
+            r, c = divmod(i, 2)
+            cell = ctk.CTkFrame(self.grid_container, fg_color=self.colors["white"], corner_radius=15, border_width=1, border_color=self.colors["border"])
+            cell.grid(row=r, column=c, padx=12, pady=10, sticky="ew")
+            self.grid_container.grid_columnconfigure(c, weight=1)
+            
+            ctk.CTkLabel(cell, text=f"{m}m:", font=("Inter", 14, "bold"), text_color=self.colors["accent"]).pack(side="left", padx=15)
+            ent = ctk.CTkEntry(cell, placeholder_text="0.0000", border_width=0, fg_color="transparent", width=100)
+            ent.pack(side="right", fill="x", expand=True, padx=10)
+            self.entries[m] = ent
+
+    def setup_status_bar(self):
+        self.status_bar = ctk.CTkLabel(self, text="● Sistem Hazır", font=("Inter", 12), fg_color=self.colors["bg_sidebar"], text_color="#7F8C8D", anchor="w")
+        self.status_bar.grid(row=1, column=0, columnspan=2, sticky="ew", padx=10)
+        self.progress = ctk.CTkProgressBar(self, mode="indeterminate", height=2, progress_color=self.colors["primary"])
+        self.progress.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.progress.stop()
+
+    # --- FONKSİYONLAR ---
+    def create_styled_btn(self, master, text_key, command, state="normal"):
+        btn = ctk.CTkButton(master, text="", command=command, state=state,
+                            fg_color=self.colors["white"], text_color=self.colors["accent"],
+                            border_width=2, border_color=self.colors["primary"],
+                            hover_color="#E8F5E9", corner_radius=15, height=48)
+        btn.pack(pady=10, padx=25, fill="x")
+        btn._text_key = text_key 
+        return btn
+
+    def refresh_ui_text(self):
+        """Tüm widget metinlerini mevcut dile göre günceller."""
+        t = self.TEXTS[self.lang]
+        self.title(t["title"])
+        self.lbl_sidebar_head.configure(text=t["sidebar_head"])
+        self.lbl_settings.configure(text=t["settings"])
+        self.lbl_ai_val.configure(text=f"{t['ai_val']}: ---")
+        self.lbl_dist_table.configure(text=t["dist_table"])
+        self.run_btn.configure(text=t["start"])
+        self.check_batch.configure(text=t["batch"])
+        self.check_conf.configure(text=t["conf"])
+        
+        for btn in [self.btn_ref, self.calib_btn, self.btn_animal]:
+            btn.configure(text=t[btn._text_key])
+
+    def change_language(self, choice):
+        self.lang = choice
+        self.refresh_ui_text()
+
+    def set_status(self, message, loading=False):
+        self.status_bar.configure(text=f"● {message}")
+        if loading: self.progress.start()
+        else: self.progress.stop()
+
+    def init_engine(self):
+        def load():
+            try:
+                # InferenceEngine nesnesini burada başlatıyoruz
                 self.engine = InferenceEngine(DETECTOR_PATH, DEVICE)
-                print(">>> MOTOR HAZIR.")
-            else:
-                print(f">>> HATA: Model dosyası bulunamadı: {DETECTOR_PATH}")
+                self.set_status("AI Motoru Hazır.")
+            except: 
+                self.set_status("Kritik Hata: AI Motoru yüklenemedi.")
+        threading.Thread(target=load).start()
 
-        except Exception as e:
-            import traceback
-            print(">>> KRİTİK BAŞLATMA HATASI DETAYI:")
-            traceback.print_exc()        
-
-        self.setup_ui()
+    def start_analysis_thread(self):
+        # Gerçek analiz fonksiyonunu thread içinde başlatır
+        threading.Thread(target=self.start_analysis, daemon=True).start()
 
     def copy_to_clipboard(self, event=None):
         full_text = self.click_label.cget("text")
@@ -77,80 +263,22 @@ class WildlifeMetricPrototype(ctk.CTk):
         except:
             pass
             
-    def setup_ui(self):
-        f_frame = ctk.CTkFrame(self, fg_color="white")
-        f_frame.pack(pady=10, padx=20, fill="x")
-        ctk.CTkButton(f_frame, text="Referans Seçiniz", command=self.select_ref, fg_color="#97dd36",text_color="#242820").pack(side="left", padx=10, pady=10, expand=True)
-        ctk.CTkButton(f_frame, text="Analiz Edeceğiniz Görseli Seçiniz", command=self.select_animal ,fg_color="#97dd36",text_color="#242820").pack(side="left", padx=10, pady=10, expand=True)
-
-        self.status_label = ctk.CTkLabel(self, text="Henüz Seçim Yapılmadı", font=("Arial", 14))
-        self.status_label.pack(pady=10)
-
-  
-        self.roi_mode = ctk.CTkSegmentedButton(self, 
-            values=["AUTO", "NEAR", "MID", "FAR"],
-            command=self.update_roi_logic)
-        self.roi_mode.set("AUTO")
-        self.roi_mode.pack(pady=10, padx=20, fill="x")
-
-
-        self.info_frame = ctk.CTkFrame(self, fg_color="#97dd36")
-        self.info_frame.pack(pady=5, padx=20, fill="x")
-        self.click_label = ctk.CTkLabel(self.info_frame, text="GÜNCEL AI DEĞERİ: ---", font=("Arial", 18, "bold"), text_color="#242820")
-        self.click_label.pack(pady=10)
-
-        self.click_label.bind("<Button-1>", self.copy_to_clipboard)
-        self.info_frame.bind("<Button-1>", self.copy_to_clipboard)
-
-        self.click_label.configure(cursor="hand2")
-        self.info_frame.configure(cursor="hand2")
-
-        self.ref_frame = ctk.CTkFrame(self, fg_color="white")
-        self.ref_frame.pack(pady=10, padx=20, fill="both")
-        self.meters = [1, 3, 5, 7, 9, 11, 13, 15]
-        self.entries = {}
-        for i, m in enumerate(self.meters):
-            r, c = divmod(i, 2)
-            row = ctk.CTkFrame(self.ref_frame, fg_color="white"); row.grid(row=r, column=c, padx=10, pady=5, sticky="ew")
-            ctk.CTkLabel(row, text=f"{m}m Değeri:", width=80).pack(side="left")
-            ent = ctk.CTkEntry(row, width=120); ent.pack(side="right", padx=5)
-            self.entries[m] = ent
-
-        h_frame = ctk.CTkFrame(self, fg_color="#78C012")
-        h_frame.pack(pady=10, padx=20, fill="x")
-        ctk.CTkLabel(h_frame, text="YATAY TELAFİ (3m Çubukları)", font=("Arial", 12, "bold")).pack(pady=2)
-        h_row = ctk.CTkFrame(h_frame, fg_color="transparent")
-        h_row.pack(pady=5)
-        ctk.CTkLabel(h_row, text="Sol X(Pixel Değeri):").pack(side="left", padx=5)
-        self.ent_x_l = ctk.CTkEntry(h_row, width=80); self.ent_x_l.pack(side="left", padx=5)
-        ctk.CTkLabel(h_row, text="Sağ X(Pixel Değeri):").pack(side="left", padx=5)
-        self.ent_x_r = ctk.CTkEntry(h_row, width=80); self.ent_x_r.pack(side="left", padx=5)
-
-        self.formula_option = ctk.CTkComboBox(self, values=["Linear Interpolation", "2. Degree Polynomial"])
-        self.formula_option.pack(pady=10); self.formula_option.set("Linear Interpolation")
-
-        self.calib_btn = ctk.CTkButton(self, text="KALİBRASYON EKRANINI AÇ", command=self.open_calibration, state="disabled", fg_color="#97dd36" ,text_color="#050A01")
-        self.calib_btn.pack(pady=5)
-        self.run_btn = ctk.CTkButton(self, text="ANALİZİ BAŞLAT", command=self.start_analysis, fg_color="green", height=45, state="disabled")
-        self.run_btn.pack(pady=20)
-
     def select_ref(self):
         self.ref_path = filedialog.askopenfilename()
         if self.ref_path: self.calib_btn.configure(state="normal", fg_color="Black")
         self.calib_btn.configure(state="normal", fg_color="White")
         self.status_label.configure(text="Görsel Yüklendi!", font=("Arial", 18, "bold"), text_color="#926615")
 
-
     def select_animal(self):
         self.animal_path = filedialog.askopenfilename()
         if self.animal_path: self.run_btn.configure(state="normal")
 
-
     def update_roi_logic(self, value):
         print(f">>> Manuel ROI Modu Seçildi: {value}")
 
-
     def open_calibration(self):
+        
+        self.set_status("Görsel yükleniyor ve Depth Map oluşturuluyor...", loading=True)
 
         if self.engine is None:
             messagebox.showerror("Hata", "Görüntü işleme motoru yüklenemedi! \nTerminaldeki hata mesajına bakın.")
@@ -196,7 +324,24 @@ class WildlifeMetricPrototype(ctk.CTk):
         
   
         self.img_label.bind("<Button-1>", self.on_tkinter_click)
-     
+
+        def run_inference_bg(self):
+            self.set_status("AI Modelleri çalışıyor, lütfen bekleyin...", loading=True)
+
+            try:
+                depth_map, detections = self.engine.run_inference(self.current_frame) 
+                
+                self.last_depth_map = depth_map
+                self.last_detections = detections
+
+                self.after(0, self.finish_inference_ui)
+
+            except Exception as e:
+                self.after(0, lambda: self.set_status(f"Hata oluştu: {str(e)}", loading=False))
+
+        def finish_inference_ui(self):
+            self.set_status("Analiz tamamlandı!", loading=False)
+
 
     def on_tkinter_click(self, event):
         curr_width = self.img_label.winfo_width()
