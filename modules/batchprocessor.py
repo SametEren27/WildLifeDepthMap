@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
 import re
+from scipy.interpolate import interp1d
 
 def clean_string(value):
     """Excel'in kabul etmediği illegal karakterleri temizler."""
@@ -39,12 +40,33 @@ def get_exif_data(path):
         print(f"Metadata okuma hatası: {e}")
     return metadata
 
+def calculate_distance(raw_val, x_ref, y_ref, mode="log"):
+    """Tavanı yıkan logaritmik mesafe hesaplama."""
+    if len(x_ref) < 2: return 0.0
+    pairs = sorted(zip(x_ref, y_ref))
+    x_s = np.array([p[0] for p in pairs], dtype=float)
+    y_s = np.array([p[1] for p in pairs], dtype=float)
+    
+    x_s = np.maximum(x_s, 1e-6)
+    y_s = np.maximum(y_s, 1e-6)
+    raw_val = max(raw_val, 1e-6)
+
+    try:
+        if mode == "log":
+            model = interp1d(np.log(x_s), np.log(y_s), kind='linear', fill_value="extrapolate", bounds_error=False) # type: ignore
+            dist = np.exp(float(model(np.log(raw_val))))
+        else:
+            model = interp1d(x_s, y_s, kind='linear', fill_value="extrapolate", bounds_error=False) # type: ignore
+            dist = float(model(raw_val))
+        return max(0.1, dist)
+    except:
+        return 0.0
+
 class BatchProcessor:
     def __init__(self, engine, cpp_lib=None):
         self.engine = engine
         self.cpp_lib = cpp_lib
 
-    # DİKKAT: process_folder artık sınıfın (class) içinde!
     def process_folder(self, input_dir, entries_data, filter_settings, progress_callback):
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = os.path.join(input_dir, f"Analiz_{timestamp}")
@@ -53,7 +75,6 @@ class BatchProcessor:
         images = [f for f in os.listdir(input_dir) if f.lower().endswith(('.jpg', '.png', '.jpeg'))]
         results = []
 
-        # Kalibrasyon verilerini hazırla
         pairs = sorted([(float(v), float(m)) for m, v in entries_data.items() if v])
         x_calib = [p[0] for p in pairs] if pairs else []
         y_calib = [p[1] for p in pairs] if pairs else []
@@ -73,44 +94,46 @@ class BatchProcessor:
                     for det in detections:
                         xmin, ymin, xmax, ymax, conf, cls = det
                         ixmin, iymin, ixmax, iymax = int(xmin), int(ymin), int(xmax), int(ymax)
-                        
                         ixmin, iymin = max(0, ixmin), max(0, iymin)
                         ixmax, iymax = min(w_orig, ixmax), min(h_orig, iymax)
-
-                        animal_roi = d_map[iymin:iymax, ixmin:ixmax]
                         
-                        if animal_roi.size > 0:
-                            d_final = np.median(animal_roi)
-                            animal_std = np.std(animal_roi)
+                        box_h = iymax - iymin
+                        
+                        is_vertical = box_h > (ixmax - ixmin) * 1.5
+                        roi_ratio = 0.20 if is_vertical else 0.30
+                        
+                        roi = d_map[int(iymax - box_h * roi_ratio):iymax, ixmin:ixmax]
+                        
+                        if roi.size > 0:
+                            d_final = np.median(roi)
+                            animal_std = np.std(roi)
                             batch_conf = max(0, min(100, 100 - (animal_std * 500)))
                         else:
                             d_final, batch_conf = 0.5, 0
 
-                        estimated_dist = np.interp(d_final, x_calib, y_calib) if len(x_calib) >= 2 else 0.0
+                        estimated_dist = calculate_distance(d_final, x_calib, y_calib, mode="log")
+                        
                         exif = get_exif_data(img_path)
 
-                        # Temel satırı oluştur
                         row = {
                             "Dosya Adı": clean_string(filename),
                             "Tahmini Mesafe (m)": round(estimated_dist, 3),
                             "Güven Oranı (%)": round(batch_conf, 2),
                             "Ham AI Değeri": round(float(d_final), 5),
                             "Tespit Skoru": round(float(conf), 2),
+                            "Tespit Tipi": "DIKEY" if is_vertical else "YATAY",
                             "İşlem Zamanı": datetime.now().strftime("%H:%M:%S")
                         }
 
-                        # EXIF verilerini row içine ekle
                         for tag, value in exif.items():
                             clean_tag = clean_string(str(tag))
                             clean_val = clean_string(str(value))
                             if clean_tag not in row:
                                 row[clean_tag] = clean_val
                         
-                        # --- DOĞRU YER: EXIF döngüsü bitti, şimdi append yapıyoruz ---
                         results.append(row)
 
                 else:
-                    # Hayvan bulunamadıysa tek satır ekle
                     results.append({
                         "Dosya Adı": filename, 
                         "Tahmini Mesafe (m)": "Tespit Yok", 

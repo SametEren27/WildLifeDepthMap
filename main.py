@@ -19,6 +19,7 @@ import timm
 import PIL
 import threading
 from modules.batchprocessor import BatchProcessor
+from scipy.interpolate import interp1d
 
 def get_resource_path(relative_path):
     if hasattr(sys, '_MEIPASS'):
@@ -468,7 +469,33 @@ class WildlifeMetricPrototype(ctk.CTk):
         res_label = ctk.CTkLabel(res_win, image=img_ctk, text="")
         res_label.pack(pady=10, padx=10)
         ctk.CTkButton(res_win, text="Kapat", command=res_win.destroy).pack(pady=5)
+
+
+    def calculate_distance(self, raw_val, x_ref, y_ref, mode="log"):
+        if len(x_ref) < 2: return 0.0
+
+        pairs = sorted(zip(x_ref, y_ref))
+        x_sorted = np.array([p[0] for p in pairs], dtype=float)
+        y_sorted = np.array([p[1] for p in pairs], dtype=float)
+
+        x_sorted = np.maximum(x_sorted, 1e-6)
+        y_sorted = np.maximum(y_sorted, 1e-6)
+        raw_val = max(raw_val, 1e-6)
+
+        try:
+            if mode == "log":
+                log_x, log_y = np.log(x_sorted), np.log(y_sorted)
+                model = interp1d(log_x, log_y, kind='linear', fill_value="extrapolate", bounds_error=False) # type: ignore
+                dist = np.exp(float(model(np.log(raw_val))))
+            else:
+                model = interp1d(x_sorted, y_sorted, kind='linear', fill_value="extrapolate", bounds_error=False) # type: ignore
+                dist = float(model(raw_val))
             
+            return max(0.1, dist)
+        except:
+            return 0.0
+        
+
     def start_analysis(self):
         try:
             self.set_status("Analiz yapılıyor...", loading=True)
@@ -499,52 +526,35 @@ class WildlifeMetricPrototype(ctk.CTk):
                 ixmin, iymin, ixmax, iymax = int(xmin), int(ymin), int(xmax), int(ymax)
                 box_h = iymax - iymin
                 cx, cy = int((ixmin + ixmax)/2), int((iymin + iymax)/2)
-                
+
                 rough_roi = depth_map[max(0,cy-5):min(h_orig,cy+5), max(0,cx-5):min(w_orig,cx+5)]
                 rough_val = np.median(rough_roi) if rough_roi.size > 0 else 0.5
+                rough_dist = self.calculate_distance(rough_val, x_ref, y_ref, mode="linear")
 
-                sorted_indices = np.argsort(x_ref)
-                x_sorted = np.array(x_ref)[sorted_indices]
-                y_sorted = np.array(y_ref)[sorted_indices]
-
-                rough_dist = np.interp(rough_val, x_sorted, y_sorted)
 
                 mode = self.roi_mode.get()
                 if mode == "AUTO":
-                    if rough_dist < 5.0:      current_case = "NEAR"
-                    elif rough_dist < 15.0:   current_case = "MID"
-                    else:                     current_case = "FAR"
-                    self.roi_mode.set(current_case) 
+                    if rough_dist < 5.0:    current_case = "NEAR"
+                    elif rough_dist < 15.0: current_case = "MID"
+                    else:                   current_case = "FAR"
+        
                 else:
                     current_case = mode
-
+                    
                 if current_case == "NEAR":
-                    roi = depth_map[int(iymax-box_h*0.15):iymax, ixmin:ixmax]
-                    d_final = np.percentile(roi, 90) if roi.size > 0 else rough_val
+                    roi = depth_map[int(iymax-box_h*0.20):iymax, ixmin:ixmax]
                     box_color = (0, 255, 0) 
                 elif current_case == "MID":
                     roi = depth_map[int(iymin+box_h*0.5):int(iymin+box_h*0.8), ixmin:ixmax]
-                    d_final = np.mean(roi) if roi.size > 0 else rough_val
-                    box_color = (255, 165, 0)
+                    box_color = (255, 255, 0)
                 else: 
                     roi = depth_map[int(iymin+box_h*0.4):int(iymin+box_h*0.6), ixmin:ixmax]
-                    d_final = np.mean(roi) if roi.size > 0 else rough_val
-                    box_color = (0, 0, 255)
-                # factor = 1 + (0.15 * ((current_r / max_r)**2))
-                factor = 1.0 
-                d_final_corrected = d_final * factor
-                dist = np.interp(d_final_corrected, x_sorted, y_sorted)
+                    box_color = (0, 0, 255) 
 
-                formula = self.formula_option.get()
-                if "Linear" in formula:
-                    sorted_indices = np.argsort(x_ref)
-                    x_sorted = np.array(x_ref)[sorted_indices]
-                    y_sorted = np.array(y_ref)[sorted_indices]
-                        
-                    dist = np.interp(d_final_corrected, x_sorted, y_sorted)
-                else:
-                    coeffs = np.polyfit(x_ref, y_ref, 2)
-                    dist = coeffs[0]*(d_final_corrected**2) + coeffs[1]*d_final_corrected + coeffs[2]
+
+                d_final = np.median(roi) if roi.size > 0 else rough_val
+                mode_choice = "log" if "Log" in self.formula_option.get() else "linear"
+                dist = self.calculate_distance(d_final, x_ref, y_ref, mode=mode_choice)
 
                 label = f"{dist:.2f}m [{current_case}]"
                 cv2.rectangle(analysis_frame, (ixmin, iymin), (ixmax, iymax), box_color, 3)
@@ -555,9 +565,91 @@ class WildlifeMetricPrototype(ctk.CTk):
 
         except Exception as e:
             messagebox.showerror("Hata", f"Analiz başarısız: {str(e)}")
+                
+    # def start_analysis(self):
+    #     try:
+    #         self.set_status("Analiz yapılıyor...", loading=True)
+    #         x_ref, y_ref = [], []
+    #         for m, ent in self.entries.items():
+    #             if ent.get():
+    #                 x_ref.append(float(ent.get()))
+    #                 y_ref.append(float(m))
+            
+    #         if len(x_ref) < 2:
+    #             messagebox.showwarning("Hata", "Lütfen en az 2 referans noktası girin!")
+    #             return
+
+    #         stream = open(self.animal_path, "rb")
+    #         frame = cv2.imdecode(np.frombuffer(stream.read(), np.uint8), cv2.IMREAD_COLOR)
+    #         info_bar_h = int(frame.shape[0] / 18)
+    #         analysis_frame = frame[0:frame.shape[0]-info_bar_h, :].copy()
+    #         h_orig, w_orig = analysis_frame.shape[:2]
+
+    #         depth_map, detections = self.engine.run_inference(analysis_frame)
+            
+    #         if not detections:
+    #             messagebox.showinfo("Bilgi", "Görselde hayvan tespit edilemedi.")
+    #             return
+
+    #         for det in detections:
+    #             xmin, ymin, xmax, ymax, conf, cls = det
+    #             ixmin, iymin, ixmax, iymax = int(xmin), int(ymin), int(xmax), int(ymax)
+    #             box_h = iymax - iymin
+    #             cx, cy = int((ixmin + ixmax)/2), int((iymin + iymax)/2)
+                
+    #             rough_roi = depth_map[max(0,cy-5):min(h_orig,cy+5), max(0,cx-5):min(w_orig,cx+5)]
+    #             rough_val = np.median(rough_roi) if rough_roi.size > 0 else 0.5
+
+    #             sorted_indices = np.argsort(x_ref)
+    #             x_sorted = np.array(x_ref)[sorted_indices]
+    #             y_sorted = np.array(y_ref)[sorted_indices]
+
+    #             rough_dist = np.interp(rough_val, x_sorted, y_sorted)
+
+    #             mode = self.roi_mode.get()
+    #             if mode == "AUTO":
+    #                 if rough_dist < 5.0:      current_case = "NEAR"
+    #                 elif rough_dist < 15.0:   current_case = "MID"
+    #                 else:                     current_case = "FAR"
+    #                 self.roi_mode.set(current_case) 
+    #             else:
+    #                 current_case = mode
+
+    #             if current_case == "NEAR":
+    #                 roi = depth_map[int(iymax-box_h*0.15):iymax, ixmin:ixmax]
+    #                 d_final = np.percentile(roi, 90) if roi.size > 0 else rough_val
+    #                 box_color = (0, 255, 0) 
+    #             elif current_case == "MID":
+    #                 roi = depth_map[int(iymin+box_h*0.5):int(iymin+box_h*0.8), ixmin:ixmax]
+    #                 d_final = np.mean(roi) if roi.size > 0 else rough_val
+    #                 box_color = (255, 165, 0)
+    #             else: 
+    #                 roi = depth_map[int(iymin+box_h*0.4):int(iymin+box_h*0.6), ixmin:ixmax]
+    #                 d_final = np.mean(roi) if roi.size > 0 else rough_val
+    #                 box_color = (0, 0, 255)
+    #             # factor = 1 + (0.15 * ((current_r / max_r)**2))
+    #             factor = 1.0 
+    #             d_final_corrected = d_final * factor
+    #             dist = np.interp(d_final_corrected, x_sorted, y_sorted)
+
+    #             formula = self.formula_option.get()
+    #             if "Linear" in formula:
+    #                 sorted_indices = np.argsort(x_ref)
+    #                 x_sorted = np.array(x_ref)[sorted_indices]
+    #                 y_sorted = np.array(y_ref)[sorted_indices]
+                        
+    #                 dist = np.interp(d_final_corrected, x_sorted, y_sorted)
+    #             else:
+    #                 coeffs = np.polyfit(x_ref, y_ref, 2)
+    #                 dist = coeffs[0]*(d_final_corrected**2) + coeffs[1]*d_final_corrected + coeffs[2]
+
+    #             label = f"{dist:.2f}m [{current_case}]"
+    #             cv2.rectangle(analysis_frame, (ixmin, iymin), (ixmax, iymax), box_color, 3)
+    #             cv2.putText(analysis_frame, label, (ixmin, iymin - 10), 
+    #                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, box_color, 2)
+
+    #         self.show_result_window(analysis_frame)
 
 if __name__ == "__main__":
     app = WildlifeMetricPrototype()
     app.mainloop()
-
-## knk range kısmının 2 asamalı calısması gerektigidnen emin ol ic ice calısıcaklar once default olcak sonra near mid far yapıcak ve formulleri tekrar duzenle 
